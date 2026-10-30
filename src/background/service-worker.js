@@ -31,6 +31,42 @@ function sanitizeFilename(name) {
   return String(name || 'video').replace(/[\\/:*?"<>|\n\r\t]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 150) || 'video';
 }
 
+// ---------------------------------------------------------------------------
+// Referer injection for hotlink-protected CDNs
+// ---------------------------------------------------------------------------
+// Some CDNs (e.g. dramatip's cdn.dramadizilerim.xyz) return HTTP 451
+// "origin not allowed" unless the request carries the site's Referer/Origin.
+// A service-worker fetch() cannot set those forbidden headers itself, so we
+// install a short-lived declarativeNetRequest session rule that rewrites them
+// for requests to the stream's host(s) while the download runs, then remove it.
+function hostOf(u) { try { return new URL(u).host; } catch { return ''; } }
+
+let _refererRuleSeq = 7000;
+async function setReferer(hosts, pageOrigin) {
+  hosts = [...new Set(hosts.filter(Boolean))];
+  if (!pageOrigin || !hosts.length || !chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateSessionRules) return null;
+  const id = ++_refererRuleSeq;
+  const rule = {
+    id,
+    priority: 1,
+    action: {
+      type: 'modifyHeaders',
+      requestHeaders: [
+        { header: 'referer', operation: 'set', value: pageOrigin.replace(/\/?$/, '/') },
+        { header: 'origin', operation: 'set', value: pageOrigin.replace(/\/$/, '') },
+      ],
+    },
+    condition: { requestDomains: hosts, resourceTypes: ['xmlhttprequest', 'media', 'other', 'sub_frame', 'image', 'ping'] },
+  };
+  try { await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id], addRules: [rule] }); return id; }
+  catch { return null; }
+}
+async function clearReferer(id) {
+  if (id == null || !chrome.declarativeNetRequest) return;
+  try { await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id] }); } catch {}
+}
+
+
 // Download status must reach BOTH the popup (runtime.sendMessage) and the page
 // overlay (tabs.sendMessage — runtime messages never reach content scripts).
 function emitStatus(tabId, payload) {
@@ -75,11 +111,22 @@ async function prependInit(bytes, initUrl) {
 
 // Download an HLS stream (whole, or a [start,end] interval) and save it.
 async function downloadHls(url, filenameBase, opts = {}) {
+  const referer = opts.referer || null;
+  let refRuleId = referer ? await setReferer([hostOf(url)], referer) : null;
+  try {
   const playlist = await loadHlsPlaylist(fetch, url);
   if (!playlist || !Array.isArray(playlist.segments) || !playlist.segments.length) {
     throw new Error('No segments found in playlist');
   }
   let segs = playlist.segments;
+  if (referer) {
+    // widen the rule to any extra hosts the segments/init live on
+    const hosts = new Set([hostOf(url)]);
+    for (const sg of playlist.segments) { const h = hostOf(sg && sg.url); if (h) hosts.add(h); }
+    if (playlist.initSegmentUrl) hosts.add(hostOf(playlist.initSegmentUrl));
+    await clearReferer(refRuleId);
+    refRuleId = await setReferer([...hosts], referer);
+  }
   if (Number.isFinite(opts.start) || Number.isFinite(opts.end)) {
     segs = segmentsInInterval(playlist.segments, opts.start ?? 0, opts.end ?? playlist.totalDuration);
     if (!segs.length) throw new Error('Selected range contains no segments');
@@ -107,21 +154,37 @@ async function downloadHls(url, filenameBase, opts = {}) {
   const dataUrl = 'data:' + mime + ';base64,' + bytesToBase64(bytes);
   await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
   return { filename, bytes: bytes.length };
+  } finally { await clearReferer(refRuleId); }
 }
 
 // Download a direct media file (mp4/webm/...).
-async function downloadFile(url, filenameBase) {
+async function downloadFile(url, filenameBase, opts = {}) {
   const extMatch = url.split('?')[0].match(/\.([a-z0-9]{2,5})$/i);
   const ext = extMatch ? extMatch[1].toLowerCase() : 'mp4';
   const filename = sanitizeFilename(filenameBase) + '.' + ext;
-  await chrome.downloads.download({ url, filename, saveAs: false });
+  const referer = opts.referer || null;
+  const refRuleId = referer ? await setReferer([hostOf(url)], referer) : null;
+  const downloadId = await chrome.downloads.download({ url, filename, saveAs: false });
+  if (refRuleId != null) {
+    // the request is in flight after download() resolves; drop the rule once it
+    // leaves the "in_progress" state (or after a safety timeout).
+    const done = () => clearReferer(refRuleId);
+    const listener = (delta) => {
+      if (delta.id === downloadId && delta.state && delta.state.current !== 'in_progress') {
+        chrome.downloads.onChanged.removeListener(listener); done();
+      }
+    };
+    try { chrome.downloads.onChanged.addListener(listener); } catch { done(); }
+    setTimeout(() => { try { chrome.downloads.onChanged.removeListener(listener); } catch {} done(); }, 120000);
+  }
   return { filename };
 }
 
 async function downloadStream(stream, title, meta = null) {
   const base = title || stream.name || 'video';
-  if (stream.kind === StreamKind.HLS) return downloadHls(stream.url, base, { ...(stream.opts || {}), meta });
-  if (stream.kind === StreamKind.FILE) return downloadFile(stream.url, base);
+  const referer = stream.pageOrigin || null;
+  if (stream.kind === StreamKind.HLS) return downloadHls(stream.url, base, { ...(stream.opts || {}), meta, referer });
+  if (stream.kind === StreamKind.FILE) return downloadFile(stream.url, base, { referer });
   if (stream.kind === StreamKind.DASH) throw new Error('DASH (.mpd) download is coming soon. HLS and direct files work now.');
   throw new Error('Unknown stream type');
 }

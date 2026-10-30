@@ -21,6 +21,7 @@ const EXT = path.resolve('.');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const CHARTDRAMA = 'https://dramabox.chartdrama.com/p/42000027028/abandoned-husband-titan-lord?ep=1';
 const IG_REEL = 'https://www.instagram.com/reel/DeTUk4sDSp-/';
+const DRAMATIP = 'https://dramatip.net/series/chained-together';
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'siphon-health-'));
 const ctx = await chromium.launchPersistentContext(userDataDir, {
@@ -165,8 +166,67 @@ async function checkInstagram() {
   return { name, status: 'PASS', detail: `${fbcdn.length} fbcdn stream(s) resolved` };
 }
 
+// ── dramatip ───────────────────────────────────────────────────
+// dramatip plays HLS via blob: MSE; the passive detector still catches the
+// .m3u8, but its CDN (cdn.dramadizilerim.xyz) 451s any request lacking the site
+// Referer. Healthy = the stream is detected AND a Referer-injected fetch (the
+// same declarativeNetRequest rewrite the downloader installs) returns the real
+// manifest, not "origin not allowed".
+async function checkDramatip() {
+  const name = 'dramatip';
+  const page = await ctx.newPage();
+  try {
+    await page.goto(DRAMATIP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    await page.close().catch(() => {});
+    return { name, status: 'UNREACHABLE', detail: `navigation failed: ${String(e.message || e)}` };
+  }
+  await page.waitForTimeout(3000);
+  for (const sel of ['video', '[class*="play"]', 'button']) { const el = await page.$(sel); if (el) { await el.click({ timeout: 1500 }).catch(() => {}); await page.waitForTimeout(900); } }
+  await page.waitForTimeout(6000);
+
+  const extPage = await ctx.newPage();
+  await extPage.goto(`chrome-extension://${extId}/src/popup/popup.html`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  const got = await extPage.evaluate(async () => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url && t.url.includes('dramatip.net'));
+    if (!tab) return { err: 'dramatip tab not found' };
+    const r = await chrome.runtime.sendMessage({ type: 'GET_STREAMS', tabId: tab.id });
+    const hls = (r && r.streams || []).find((x) => x.kind === 'hls');
+    return { url: hls && hls.url, pageOrigin: hls && hls.pageOrigin };
+  }).catch((e) => ({ err: String(e) }));
+  await extPage.close().catch(() => {});
+  await page.close().catch(() => {});
+
+  if (got.err) return { name, status: 'BROKEN', detail: got.err };
+  if (!got.url) return { name, status: 'BROKEN', detail: 'no HLS stream detected (player markup/CDN likely changed)' };
+  if (!got.pageOrigin) return { name, status: 'BROKEN', detail: 'stream detected but pageOrigin not captured (detector regression)' };
+
+  // Install the same Referer rewrite the downloader uses, then fetch the manifest
+  // from the service-worker context.
+  const probe = await sw.evaluate(async ({ url, pageOrigin }) => {
+    const hostOf = (u) => { try { return new URL(u).host; } catch { return ''; } };
+    const id = 7001;
+    try {
+      await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id], addRules: [{ id, priority: 1, action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'set', value: pageOrigin + '/' }, { header: 'origin', operation: 'set', value: pageOrigin }] }, condition: { requestDomains: [hostOf(url)], resourceTypes: ['xmlhttprequest', 'media', 'other'] } }] });
+    } catch (e) { return { ok: false, detail: 'DNR rule failed: ' + String(e) }; }
+    let out;
+    try {
+      const r = await fetch(url);
+      const txt = await r.text();
+      out = { ok: r.status === 200 && txt.includes('#EXTM3U'), detail: `manifest HTTP ${r.status}, ${txt.includes('#EXTM3U') ? 'valid m3u8' : 'body=' + txt.slice(0, 40)}` };
+    } catch (e) { out = { ok: false, detail: 'manifest fetch threw: ' + String(e) }; }
+    try { await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id] }); } catch {}
+    return out;
+  }, got).catch((e) => ({ ok: false, detail: `sw.evaluate failed: ${String(e)}` }));
+
+  if (!probe.ok) return { name, status: 'BROKEN', detail: probe.detail };
+  return { name, status: 'PASS', detail: `HLS detected + Referer-fetch ok (${probe.detail})` };
+}
+
 results.push(await checkChartdrama());
 results.push(await checkInstagram());
+results.push(await checkDramatip());
 await ctx.close();
 
 // ── report ──────────────────────────────────────────────────────────────────

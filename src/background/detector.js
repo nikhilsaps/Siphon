@@ -147,6 +147,15 @@ export function clear(tabId) {
 
 export function setNotifier(fn) { notifyFn = fn; }
 
+// The page origin that issued the request — used as the Referer/Origin when the
+// background later re-fetches the stream, so hotlink-protected CDNs (which 451 a
+// request that lacks the site Referer) still serve it.
+function pageOriginExtra(d) {
+  const o = d.initiator || d.documentUrl || d.originUrl || '';
+  if (!o) return {};
+  try { return { pageOrigin: new URL(o).origin }; } catch { return {}; }
+}
+
 export function initDetector() {
   const filter = { urls: ['http://*/*', 'https://*/*'] };
 
@@ -154,7 +163,7 @@ export function initDetector() {
   chrome.webRequest.onBeforeRequest.addListener((d) => {
     const real = unwrap(d.url) || d.url;
     const kind = classify(real, null);
-    if (kind !== StreamKind.UNKNOWN && !SEGMENT_RE.test(real)) add(d.tabId, real, kind);
+    if (kind !== StreamKind.UNKNOWN && !SEGMENT_RE.test(real)) add(d.tabId, real, kind, pageOriginExtra(d));
   }, filter);
 
   // Content-Type pass (accurate): catches extension-less manifests/files.
@@ -165,7 +174,7 @@ export function initDetector() {
       const real = unwrap(d.url) || d.url;
       const kind = classify(real, ct);
       if (kind !== StreamKind.UNKNOWN && !SEGMENT_RE.test(real)) {
-        const extra = {};
+        const extra = pageOriginExtra(d);
         const len = (d.responseHeaders || []).find((x) => x.name && x.name.toLowerCase() === 'content-length');
         if (len && Number(len.value) > 0) extra.bytes = Number(len.value);
         add(d.tabId, real, kind, extra);

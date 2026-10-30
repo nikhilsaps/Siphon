@@ -11,7 +11,8 @@
     "alarms",
     "webRequest",
     "tabs",
-    "contextMenus"
+    "contextMenus",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "http://*/*",
