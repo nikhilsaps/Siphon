@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.vscode/
+.idea/
+test-results/
+playwright-report/
+*.ts
+!tests/**/*.ts
+*.mp4
+*.webm
+*.mkv

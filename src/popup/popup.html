@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Siphon</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo"></span>
+      <span class="wordmark">Siphon</span>
+    </div>
+    <div class="topbar-right">
+      <span id="countPill" class="count-pill" hidden>0</span>
+      <button id="refreshBtn" class="icon-btn" title="Rescan this tab">&#8635;</button>
+    </div>
+  </header>
+
+  <main class="body">
+    <!-- Detected streams (auto) -->
+    <section class="streams">
+      <div id="emptyState" class="empty">
+        <div class="empty-orb"></div>
+        <p class="empty-title">No streams yet</p>
+        <p class="empty-sub">Play a video on this tab. Siphon watches the
+          network and anything it finds (HLS, DASH, MP4) shows up here.</p>
+      </div>
+      <ul id="streamList" class="stream-list"></ul>
+    </section>
+
+    <!-- Series bulk action -->
+    <section id="seriesBar" class="series-bar" hidden>
+      <div class="series-text">
+        <span class="series-label">Series detected</span>
+        <span id="seriesCount" class="series-count"></span>
+      </div>
+      <button id="downloadAllBtn" class="btn btn-ghost">Download all episodes</button>
+    </section>
+
+    <!-- Advanced / manual -->
+    <section class="advanced">
+      <button id="advToggle" class="adv-toggle" aria-expanded="false">
+        <span>Advanced &middot; manual URL &amp; range</span>
+        <span class="chev">&#9662;</span>
+      </button>
+      <div id="advPanel" class="adv-panel" hidden>
+        <label class="field">
+          <span>Playlist / media URL</span>
+          <input id="playlistUrl" type="text" placeholder="https://.../playlist.m3u8" />
+        </label>
+        <button id="loadPlaylistBtn" class="btn btn-soft">Load</button>
+        <div id="advMeta" class="adv-meta" hidden>
+          <div class="adv-row"><span>Duration</span><span id="duration">&mdash;</span></div>
+          <div class="adv-row"><span>Segments</span><span id="segCount">0</span></div>
+          <div class="range">
+            <label>Start (s)<input id="startTime" type="number" min="0" step="0.1" value="0" /></label>
+            <label>End (s)<input id="endTime" type="number" min="0" step="0.1" value="0" /></label>
+          </div>
+          <input id="rangeSlider" type="range" min="0" max="100" value="0" />
+          <input id="rangeSliderEnd" type="range" min="0" max="100" value="100" />
+          <div class="adv-row">
+            <button id="fullBtn" class="btn btn-soft">Full duration</button>
+            <label class="inline">Max MB<input id="maxSize" type="number" min="1" value="1000" /></label>
+          </div>
+          <label class="field">
+            <span>Filename</span>
+            <input id="filenameInput" type="text" placeholder="video" />
+          </label>
+          <button id="downloadBtn" class="btn btn-primary">Download selected range</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
