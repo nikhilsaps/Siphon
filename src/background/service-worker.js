@@ -160,7 +160,7 @@ async function downloadHls(url, filenameBase, opts = {}) {
 // Download a direct media file (mp4/webm/...).
 async function downloadFile(url, filenameBase, opts = {}) {
   const extMatch = url.split('?')[0].match(/\.([a-z0-9]{2,5})$/i);
-  const ext = extMatch ? extMatch[1].toLowerCase() : 'mp4';
+  const ext = opts.ext || (extMatch ? extMatch[1].toLowerCase() : 'mp4');
   const filename = sanitizeFilename(filenameBase) + '.' + ext;
   const referer = opts.referer || null;
   const refRuleId = referer ? await setReferer([hostOf(url)], referer) : null;
@@ -184,7 +184,7 @@ async function downloadStream(stream, title, meta = null) {
   const base = title || stream.name || 'video';
   const referer = stream.pageOrigin || null;
   if (stream.kind === StreamKind.HLS) return downloadHls(stream.url, base, { ...(stream.opts || {}), meta, referer });
-  if (stream.kind === StreamKind.FILE) return downloadFile(stream.url, base, { referer });
+  if (stream.kind === StreamKind.FILE) return downloadFile(stream.url, base, { referer, ext: stream.ext });
   if (stream.kind === StreamKind.DASH) throw new Error('DASH (.mpd) download is coming soon. HLS and direct files work now.');
   throw new Error('Unknown stream type');
 }

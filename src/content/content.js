@@ -103,49 +103,68 @@
 
   // --- instagram.com native support --------------------------------------
   // Reels/posts play via blob: MSE, so the passive detector never sees a file.
-  // But Instagram embeds the media in <script type="application/json"> blobs,
-  // including video_versions[].url -> a direct, signed, progressive .mp4 on
-  // fbcdn (no cipher, no login for public posts). We scrape the best one and
-  // inject it as a downloadable card. Carousels expose several videos.
+  // But Instagram embeds the media in <script type="application/json"> blobs:
+  //   video_versions[].url   -> direct signed progressive .mp4 on fbcdn
+  //   image_versions2.candidates[].url -> direct signed .jpg on fbcdn
+  // (no cipher, no login for public posts). We scrape the best of each media
+  // node and inject it as a downloadable card. Carousels expose several items,
+  // mixing photos and videos. A video node also carries an image_versions2
+  // poster, so we only treat a node as an image when it has NO video_versions,
+  // and we skip carousel parent nodes (their children are captured instead).
   const INSTAGRAM_RE = /(^|\.)instagram\.com$/i;
   let _ig = { path: null, vids: [] };
   function parseInstaPath() {
     const m = location.pathname.match(/^\/(?:reel|reels|p|tv)\/([^/]+)/);
     return m ? { shortcode: m[1] } : null;
   }
+  function bestBySize(arr) {
+    return arr.slice().sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0] || arr[0];
+  }
+  function igImageExt(url) {
+    try { const m = new URL(url).pathname.match(/\.(jpg|jpeg|png|webp|heic)$/i); return m ? m[1].toLowerCase() : 'jpg'; }
+    catch { return 'jpg'; }
+  }
   function instagramVideos() {
     if (!INSTAGRAM_RE.test(location.hostname)) return [];
     const p = parseInstaPath();
     if (!p) return [];
     if (_ig.path === location.pathname && _ig.vids.length) return _ig.vids;
-    const urls = [];
+    const items = [];            // { url, type: 'video' | 'image' }
     const seen = new Set();
     const deref = (obj, fn, depth = 0) => {
-      if (!obj || depth > 14) return;
+      if (!obj || depth > 16) return;
       try { fn(obj); if (typeof obj === 'object') for (const k in obj) deref(obj[k], fn, depth + 1); } catch {}
     };
     try {
       for (const sc of document.querySelectorAll('script[type="application/json"]')) {
         let data; try { data = JSON.parse(sc.textContent); } catch { continue; }
         deref(data, (node) => {
-          if (node && Array.isArray(node.video_versions) && node.video_versions.length) {
-            const best = node.video_versions.slice().sort(
-              (a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0))
-            )[0] || node.video_versions[0];
-            if (best && best.url && !seen.has(best.url)) { seen.add(best.url); urls.push(best.url); }
+          if (!node || typeof node !== 'object') return;
+          if (Array.isArray(node.carousel_media)) return; // parent; children handled on their own
+          if (Array.isArray(node.video_versions) && node.video_versions.length) {
+            const best = bestBySize(node.video_versions);
+            if (best && best.url && !seen.has(best.url)) { seen.add(best.url); items.push({ url: best.url, type: 'video' }); }
+          } else if (node.image_versions2 && Array.isArray(node.image_versions2.candidates) && node.image_versions2.candidates.length) {
+            const best = bestBySize(node.image_versions2.candidates);
+            if (best && best.url && !seen.has(best.url)) { seen.add(best.url); items.push({ url: best.url, type: 'image' }); }
           }
         });
       }
     } catch {}
     const owner = ((document.title.match(/^(.*?)\s+on Instagram/) || [])[1] || 'instagram').trim();
-    const vids = urls.map((url, i) => ({
-      id: 'ig:' + p.shortcode + ':' + i,
-      url, kind: 'file',
-      name: urls.length > 1 ? `${p.shortcode} (${i + 1})` : p.shortcode,
-      host: (() => { try { return new URL(url).host; } catch { return 'instagram'; } })(),
-      dlTitle: urls.length > 1 ? `${owner}_${p.shortcode}_${i + 1}` : `${owner}_${p.shortcode}`,
-      instagram: true,
-    }));
+    const multi = items.length > 1;
+    const vids = items.map((it, i) => {
+      const isImg = it.type === 'image';
+      const ext = isImg ? igImageExt(it.url) : 'mp4';
+      return {
+        id: 'ig:' + p.shortcode + ':' + i,
+        url: it.url, kind: 'file', ext,
+        name: (multi ? `${p.shortcode} (${i + 1})` : p.shortcode) + '.' + ext,
+        host: (() => { try { return new URL(it.url).host; } catch { return 'instagram'; } })(),
+        dlTitle: multi ? `${owner}_${p.shortcode}_${i + 1}` : `${owner}_${p.shortcode}`,
+        instagram: true, mediaType: it.type,
+      };
+    });
     _ig = { path: location.pathname, vids };
     return vids;
   }
