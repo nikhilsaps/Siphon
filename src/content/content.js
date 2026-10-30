@@ -101,6 +101,55 @@
     } catch { return null; }
   }
 
+  // --- instagram.com native support --------------------------------------
+  // Reels/posts play via blob: MSE, so the passive detector never sees a file.
+  // But Instagram embeds the media in <script type="application/json"> blobs,
+  // including video_versions[].url -> a direct, signed, progressive .mp4 on
+  // fbcdn (no cipher, no login for public posts). We scrape the best one and
+  // inject it as a downloadable card. Carousels expose several videos.
+  const INSTAGRAM_RE = /(^|\.)instagram\.com$/i;
+  let _ig = { path: null, vids: [] };
+  function parseInstaPath() {
+    const m = location.pathname.match(/^\/(?:reel|reels|p|tv)\/([^/]+)/);
+    return m ? { shortcode: m[1] } : null;
+  }
+  function instagramVideos() {
+    if (!INSTAGRAM_RE.test(location.hostname)) return [];
+    const p = parseInstaPath();
+    if (!p) return [];
+    if (_ig.path === location.pathname && _ig.vids.length) return _ig.vids;
+    const urls = [];
+    const seen = new Set();
+    const deref = (obj, fn, depth = 0) => {
+      if (!obj || depth > 14) return;
+      try { fn(obj); if (typeof obj === 'object') for (const k in obj) deref(obj[k], fn, depth + 1); } catch {}
+    };
+    try {
+      for (const sc of document.querySelectorAll('script[type="application/json"]')) {
+        let data; try { data = JSON.parse(sc.textContent); } catch { continue; }
+        deref(data, (node) => {
+          if (node && Array.isArray(node.video_versions) && node.video_versions.length) {
+            const best = node.video_versions.slice().sort(
+              (a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0))
+            )[0] || node.video_versions[0];
+            if (best && best.url && !seen.has(best.url)) { seen.add(best.url); urls.push(best.url); }
+          }
+        });
+      }
+    } catch {}
+    const owner = ((document.title.match(/^(.*?)\s+on Instagram/) || [])[1] || 'instagram').trim();
+    const vids = urls.map((url, i) => ({
+      id: 'ig:' + p.shortcode + ':' + i,
+      url, kind: 'file',
+      name: urls.length > 1 ? `${p.shortcode} (${i + 1})` : p.shortcode,
+      host: (() => { try { return new URL(url).host; } catch { return 'instagram'; } })(),
+      dlTitle: urls.length > 1 ? `${owner}_${p.shortcode}_${i + 1}` : `${owner}_${p.shortcode}`,
+      instagram: true,
+    }));
+    _ig = { path: location.pathname, vids };
+    return vids;
+  }
+
   if (ctxOk()) {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg && msg.type === MSG.DETECT_VIDEO) {
@@ -205,7 +254,7 @@
   };
 
   const ui = {
-    streams: [], series: null, open: false, toastTimer: null,
+    streams: [], injected: [], series: null, open: false, toastTimer: null,
     build() {
       this.host = document.createElement('div');
       this.host.id = 'siphon-root';
@@ -254,11 +303,16 @@
       this.render();
     },
     setSeries(series) { this.series = series; this.render(); },
-    visible() { return this.streams.length > 0 || (this.series && this.series.episodesApiUrls && this.series.episodesApiUrls.length); },
+    setInjected(list) { this.injected = Array.isArray(list) ? list : []; this.render(); },
+    visible() { return this.streams.length > 0 || this.injected.length > 0 || (this.series && this.series.episodesApiUrls && this.series.episodesApiUrls.length); },
     render() {
       if (!this.host) return;
       this.host.style.display = this.visible() ? 'block' : 'none';
-      const n = this.streams.length;
+      // When we resolve the real media ourselves (Instagram), the passive detector
+      // also catches audio tracks and tiny range-probe fragments — noise. If we have
+      // resolved videos, show only those; otherwise show sniffed streams.
+      const all = this.injected.length ? this.injected.slice() : this.streams.slice();
+      const n = all.length;
       this.countEl.style.display = n ? 'inline-block' : 'none';
       this.countEl.textContent = String(n);
       this.subEl.textContent = n ? `${n} stream${n > 1 ? 's' : ''} found` : 'Scanning for streams…';
@@ -267,7 +321,7 @@
         this.bodyEl.innerHTML = `<div class="empty"><div class="pulse">${icon.radar}</div>Watching network traffic.<br>Play the video to reveal its stream.</div>`;
       } else {
         this.bodyEl.innerHTML = '';
-        for (const s of this.streams) {
+        for (const s of all) {
           const k = KIND[s.kind] || KIND.unknown;
           const card = document.createElement('div'); card.className = 'card';
           const size = s.bytes ? ' · ' + (s.bytes / 1048576).toFixed(1) + ' MB' : '';
@@ -289,7 +343,7 @@
     },
     download(s) {
       try { document.querySelectorAll('video').forEach((v) => { try { v.pause(); } catch {} }); } catch {}
-      const title = (document.title || s.name || 'video').trim();
+      const title = (s.dlTitle || document.title || s.name || 'video').trim();
       this.showToast('Starting download…', '');
       send({ type: MSG.DOWNLOAD_STREAM, stream: s, title }).catch((e) => this.showToast('Error: ' + (e && e.message || e), 'err'));
     },
@@ -325,6 +379,7 @@
     ui.refresh();
     // chartdrama.com: resolve the series straight from its API.
     chartdramaSeries().then((cs) => { if (cs) ui.setSeries(cs); });
+    { const igv = instagramVideos(); if (igv.length) ui.setInjected(igv); }
     // generic fallback for other sites (scrape m3u8 + episodes API from the DOM).
     const meta = scanPageMeta();
     if (meta.episodesApiUrls && meta.episodesApiUrls.length && !ui.series) ui.setSeries(meta);
@@ -336,6 +391,9 @@
       });
       const m = scanPageMeta();
       if (m.episodesApiUrls && m.episodesApiUrls.length && !ui.series) ui.setSeries(m);
+      const iv = instagramVideos();
+      const cur = ui.injected || [];
+      if (iv.length && (iv.length !== cur.length || (iv[0] && cur[0] && iv[0].url !== cur[0].url) || !cur.length)) ui.setInjected(iv);
     }, 3000);
   }
   if (document.body) boot(); else window.addEventListener('DOMContentLoaded', boot);
