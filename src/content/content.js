@@ -122,75 +122,80 @@
 
   // ---------- overlay ----------
   const KIND = {
-    hls:  { label: 'HLS',  color: '#6d5efc' },
-    dash: { label: 'DASH', color: '#0891b2' },
-    file: { label: 'FILE', color: '#16a34a' },
-    unknown: { label: '???', color: '#64748b' },
+    hls:  { label: 'HLS',  color: '#6d5efc', bg: '#f1effe' },
+    dash: { label: 'DASH', color: '#0e9bb8', bg: '#e3f6fa' },
+    file: { label: 'FILE', color: '#15a35b', bg: '#e6f6ed' },
+    unknown: { label: '???', color: '#8a8f9a', bg: '#f1f2f5' },
   };
 
   const CSS = `
   :host { all: initial; }
-  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-  .root { position: fixed; right: 18px; bottom: 18px; z-index: 2147483647; }
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; }
+  .root { position: fixed; right: 20px; bottom: 20px; z-index: 2147483647; }
   .launcher {
-    display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
-    padding: 10px 14px; border-radius: 999px; color: #fff; border: none;
-    background: linear-gradient(135deg, #6d5efc 0%, #a855f7 100%);
-    box-shadow: 0 8px 24px rgba(109,94,252,.4), 0 2px 6px rgba(17,24,39,.12);
-    transition: transform .18s ease, box-shadow .18s ease; font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; gap: 9px; cursor: pointer; user-select: none;
+    padding: 9px 15px 9px 11px; border-radius: 999px; color: #fff; border: none;
+    background: #6d5efc; box-shadow: 0 6px 20px rgba(109,94,252,.32);
+    transition: transform .16s ease, box-shadow .16s ease; font-size: 13px; font-weight: 600;
   }
-  .launcher:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(109,94,252,.5); }
-  .launcher svg { width: 18px; height: 18px; }
-  .count { background: rgba(255,255,255,.28); border-radius: 999px; padding: 1px 8px; font-size: 12px; min-width: 20px; text-align: center; }
+  .launcher:hover { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(109,94,252,.42); }
+  .launcher svg { width: 17px; height: 17px; }
+  .count { background: rgba(255,255,255,.26); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 700; min-width: 20px; text-align: center; }
   .panel {
-    position: absolute; right: 0; bottom: 56px; width: 340px; max-height: 70vh; overflow: hidden;
-    display: flex; flex-direction: column; border-radius: 16px; color: #1e2130;
-    background: rgba(255,255,255,.95); backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
-    border: 1px solid rgba(17,24,39,.1); box-shadow: 0 20px 60px rgba(17,24,39,.2);
-    opacity: 0; transform: translateY(10px) scale(.98); pointer-events: none;
-    transition: opacity .2s ease, transform .2s ease;
+    position: absolute; right: 0; bottom: 58px; width: 344px; max-height: 72vh; overflow: hidden;
+    display: flex; flex-direction: column; border-radius: 16px; color: #16181d;
+    background: #fff; border: 1px solid #e0e1e7;
+    box-shadow: 0 16px 48px rgba(22,24,29,.18);
+    opacity: 0; transform: translateY(8px) scale(.99); pointer-events: none;
+    transition: opacity .18s ease, transform .18s ease;
   }
   .panel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
-  .head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid rgba(17,24,39,.08); }
-  .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg,#6d5efc,#a855f7); display: flex; align-items: center; justify-content: center; }
-  .logo svg { width: 16px; height: 16px; color: #fff; }
+  .head { display: flex; align-items: center; gap: 10px; padding: 15px 16px 14px; border-bottom: 1px solid #ececf0; }
+  .logo { width: 24px; height: 24px; border-radius: 7px; background: #6d5efc; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .logo svg { width: 14px; height: 14px; color: #fff; }
   .titles { flex: 1; min-width: 0; }
-  .titles h1 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: .2px; }
-  .titles p { margin: 2px 0 0; font-size: 11px; color: #6b7280; }
-  .iconbtn { background: transparent; border: none; color: #6b7280; cursor: pointer; padding: 4px; border-radius: 6px; line-height: 0; }
-  .iconbtn:hover { color: #1e2130; background: rgba(17,24,39,.06); }
-  .body { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
-  .empty { text-align: center; padding: 28px 16px; color: #6b7280; font-size: 13px; line-height: 1.5; }
-  .empty .pulse { width: 40px; height: 40px; margin: 0 auto 10px; border-radius: 50%; background: rgba(109,94,252,.12); display: flex; align-items: center; justify-content: center; animation: pulse 1.8s ease infinite; }
-  .empty .pulse svg { width: 20px; height: 20px; color: #6d5efc; }
-  @keyframes pulse { 0%,100% { transform: scale(1); opacity: .7; } 50% { transform: scale(1.12); opacity: 1; } }
-  .card {
-    display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px;
-    background: rgba(17,24,39,.03); border: 1px solid rgba(17,24,39,.07);
-    transition: background .15s ease, border-color .15s ease;
+  .titles h1 { font-size: 14px; font-weight: 650; letter-spacing: -.2px; }
+  .titles p { font-size: 11px; color: #9aa0ac; margin-top: 1px; }
+  .iconbtn { background: transparent; border: none; color: #9aa0ac; cursor: pointer; padding: 5px; border-radius: 7px; line-height: 0; transition: background .14s, color .14s; }
+  .iconbtn:hover { color: #16181d; background: #f6f6f9; }
+  .body { overflow-y: auto; padding: 4px 16px; }
+  .empty { text-align: center; padding: 38px 10px 36px; color: #9aa0ac; font-size: 12.5px; line-height: 1.5; }
+  .empty .pulse {
+    width: 44px; height: 44px; margin: 0 auto 14px; border-radius: 50%;
+    border: 2px solid #f1effe; position: relative;
   }
-  .card:hover { background: rgba(17,24,39,.05); border-color: rgba(109,94,252,.45); }
-  .chip { font-size: 10px; font-weight: 800; letter-spacing: .5px; padding: 4px 7px; border-radius: 6px; color: #fff; flex-shrink: 0; }
+  .empty .pulse::before {
+    content: ''; position: absolute; inset: -2px; border-radius: 50%;
+    border: 2px solid transparent; border-top-color: #6d5efc;
+    animation: spin 1.5s linear infinite;
+  }
+  .empty .pulse svg { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .card {
+    display: flex; align-items: center; gap: 11px; padding: 13px 2px;
+    border-bottom: 1px solid #ececf0;
+  }
+  .card:last-child { border-bottom: none; }
+  .chip { font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; padding: 2px 6px; border-radius: 5px; flex-shrink: 0; }
   .meta { flex: 1; min-width: 0; }
-  .meta .name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .meta .sub { font-size: 11px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
-  .dl { flex-shrink: 0; width: 34px; height: 34px; border-radius: 9px; border: none; cursor: pointer; color: #fff;
-    background: linear-gradient(135deg,#6d5efc,#a855f7); display: flex; align-items: center; justify-content: center;
-    transition: transform .15s ease, filter .15s ease; }
-  .dl:hover { transform: scale(1.08); filter: brightness(1.05); }
-  .dl svg { width: 16px; height: 16px; }
-  .foot { padding: 10px 12px; border-top: 1px solid rgba(17,24,39,.08); }
-  .allbtn { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid rgba(109,94,252,.4); cursor: pointer;
-    background: rgba(109,94,252,.1); color: #5b4ad6; font-size: 12.5px; font-weight: 600; transition: background .15s ease; }
-  .allbtn:hover { background: rgba(109,94,252,.2); }
-  .toast { position: absolute; right: 0; bottom: 56px; width: 300px; padding: 12px 14px; border-radius: 12px;
-    background: rgba(255,255,255,.98); border: 1px solid rgba(17,24,39,.1); color: #1e2130; font-size: 12.5px;
-    box-shadow: 0 16px 40px rgba(17,24,39,.2); opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s;
-    pointer-events: none; display: flex; align-items: center; gap: 10px; }
+  .meta .name { font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta .sub { font-size: 11.5px; color: #9aa0ac; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .dl { flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px; border: none; cursor: pointer; color: #fff;
+    background: #6d5efc; display: flex; align-items: center; justify-content: center;
+    transition: background .14s ease; }
+  .dl:hover { background: #5847e8; }
+  .dl svg { width: 15px; height: 15px; }
+  .foot { padding: 12px 16px 14px; border-top: 1px solid #ececf0; }
+  .allbtn { width: 100%; padding: 11px; border-radius: 10px; border: none; cursor: pointer;
+    background: #6d5efc; color: #fff; font-size: 13px; font-weight: 600; transition: background .14s ease; }
+  .allbtn:hover { background: #5847e8; }
+  .toast { position: absolute; right: 0; bottom: 58px; width: 300px; padding: 13px 14px 13px 32px; border-radius: 12px;
+    background: #fff; border: 1px solid #e0e1e7; color: #16181d; font-size: 12.5px;
+    box-shadow: 0 12px 34px rgba(22,24,29,.16); opacity: 0; transform: translateY(6px); transition: opacity .18s, transform .18s;
+    pointer-events: none; }
   .toast.show { opacity: 1; transform: translateY(0); }
-  .toast .dot { width: 8px; height: 8px; border-radius: 50%; background: #6d5efc; flex-shrink: 0; }
-  .toast.ok .dot { background: #16a34a; } .toast.err .dot { background: #dc2626; }
+  .toast .dot { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); width: 8px; height: 8px; border-radius: 50%; background: #6d5efc; }
+  .toast.ok .dot { background: #15a35b; } .toast.err .dot { background: #e0443e; }
   `;
 
   const icon = {
@@ -267,7 +272,7 @@
           const card = document.createElement('div'); card.className = 'card';
           const size = s.bytes ? ' · ' + (s.bytes / 1048576).toFixed(1) + ' MB' : '';
           card.innerHTML = `
-            <span class="chip" style="background:${k.color}">${k.label}</span>
+            <span class="chip" style="background:${k.bg};color:${k.color}">${k.label}</span>
             <div class="meta"><div class="name">${escapeHtml(s.name)}</div><div class="sub">${escapeHtml(s.host)}${size}</div></div>
             <button class="dl" title="Download">${icon.down}</button>`;
           card.querySelector('.dl').addEventListener('click', () => this.download(s));

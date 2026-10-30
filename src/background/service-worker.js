@@ -154,6 +154,30 @@ async function fetchEpisodesListForAll(apiUrls) {
   return merged;
 }
 
+// chartdrama's bulk /episodes list caches signed URLs: only the currently-watched
+// episode stays fresh, the rest carry a stale signature and 403. Each episode can
+// be re-signed on demand via /api/drama/{id}/refresh-episode?ep=N (no auth). Returns
+// the refresh endpoint base if these are chartdrama episode APIs, else null.
+function chartdramaRefreshBase(apiUrls) {
+  for (const u of (apiUrls || [])) {
+    try {
+      const url = new URL(u);
+      const m = url.pathname.match(/^\/api\/drama\/(\d+)\/episodes\/?$/);
+      if (m && /(^|\.)chartdrama\.com$/i.test(url.hostname)) return `${url.origin}/api/drama/${m[1]}/refresh-episode`;
+    } catch {}
+  }
+  return null;
+}
+
+async function freshEpisodeUrl(refreshBase, ep, fallback) {
+  if (!refreshBase || ep == null) return fallback;
+  try {
+    const r = await fetch(`${refreshBase}?ep=${encodeURIComponent(ep)}`);
+    if (r.ok) { const j = await r.json(); if (j && j.url) return j.url; }
+  } catch {}
+  return fallback;
+}
+
 async function downloadAllEpisodesInBackground(episodesApiUrls, titleBase, tabId = null) {
   try { chrome.alarms.create('sg-keepalive', { periodInMinutes: 0.5 }); } catch {}
   try {
@@ -162,12 +186,15 @@ async function downloadAllEpisodesInBackground(episodesApiUrls, titleBase, tabId
       emitStatus(tabId, { state: 'failed', error: 'No episodes found.' });
       return;
     }
+    const refreshBase = chartdramaRefreshBase(episodesApiUrls);
     const failed = [];
     for (let i = 0; i < list.length; i++) {
       const item = list[i];
       emitStatus(tabId, { current: i + 1, total: list.length, episode: item.ep, state: 'downloading' });
       try {
-        const url = item.url || '';
+        // bulk-list URLs for every episode but the current one are stale (403);
+        // re-sign each one just before downloading it.
+        const url = await freshEpisodeUrl(refreshBase, item.ep, item.url || '');
         const epNum = item.ep != null ? String(item.ep).padStart(2, '0') : String(i + 1).padStart(2, '0');
         const base = `${titleBase || 'video'} - E${epNum}`;
         if (/\.m3u8(\?|$)/i.test(url)) await downloadHls(url, base);
