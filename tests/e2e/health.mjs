@@ -1,5 +1,5 @@
 // Resolver health-check for Siphon's two reverse-engineered resolvers
-// (chartdrama episode re-signing + Instagram video_versions scraping). These
+// (chartdrama episode re-signing + dramatip HLS). These
 // break SILENTLY when the sites change their markup/APIs, so this script loads
 // the real unpacked extension, hits a known-good URL per resolver, and asserts
 // that media was actually resolved.
@@ -20,7 +20,6 @@ import fs from 'fs';
 const EXT = path.resolve('.');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const CHARTDRAMA = 'https://dramabox.chartdrama.com/p/42000027028/abandoned-husband-titan-lord?ep=1';
-const IG_REEL = 'https://www.instagram.com/reel/DeTUk4sDSp-/';
 const DRAMATIP = 'https://dramatip.net/series/chained-together';
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'siphon-health-'));
@@ -134,38 +133,6 @@ async function checkChartdrama() {
   return { name, status: 'PASS', detail: probe.detail };
 }
 
-// ── Instagram ────────────────────────────────────────────────────────────────
-// Healthy = the content-script resolver scrapes at least one direct fbcdn .mp4
-// out of the page's embedded JSON (video_versions). A login wall or a markup
-// change yields zero injected streams = BROKEN.
-async function checkInstagram() {
-  const name = 'instagram';
-  const page = await ctx.newPage();
-  try {
-    await page.goto(IG_REEL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  } catch (e) {
-    await page.close().catch(() => {});
-    return { name, status: 'UNREACHABLE', detail: `navigation failed: ${String(e.message || e)}` };
-  }
-  await page.waitForTimeout(7000);
-  const overlay = await page.evaluate(() => {
-    const host = document.querySelector('#siphon-root');
-    if (!host || !host.shadowRoot) return { present: false };
-    const cards = [...host.shadowRoot.querySelectorAll('.card')].map((c) => ({
-      name: (c.querySelector('.name') || {}).textContent || '',
-      sub: (c.querySelector('.sub') || {}).textContent || '',
-    }));
-    return { present: true, cards };
-  }).catch((e) => ({ present: false, err: String(e) }));
-  await page.close().catch(() => {});
-
-  if (!overlay.present) return { name, status: 'BROKEN', detail: `overlay not injected: ${overlay.err || 'no shadow root'}` };
-  const fbcdn = overlay.cards.filter((c) => /fbcdn|cdninstagram/i.test(c.sub));
-  if (!overlay.cards.length) return { name, status: 'BROKEN', detail: 'resolver produced 0 cards (login wall or video_versions markup changed)' };
-  if (!fbcdn.length) return { name, status: 'BROKEN', detail: `cards present but none from fbcdn/cdninstagram: ${JSON.stringify(overlay.cards).slice(0, 160)}` };
-  return { name, status: 'PASS', detail: `${fbcdn.length} fbcdn stream(s) resolved` };
-}
-
 // ── dramatip ───────────────────────────────────────────────────
 // dramatip plays HLS via blob: MSE; the passive detector still catches the
 // .m3u8, but its CDN (cdn.dramadizilerim.xyz) 451s any request lacking the site
@@ -225,7 +192,6 @@ async function checkDramatip() {
 }
 
 results.push(await checkChartdrama());
-results.push(await checkInstagram());
 results.push(await checkDramatip());
 await ctx.close();
 

@@ -101,73 +101,6 @@
     } catch { return null; }
   }
 
-  // --- instagram.com native support --------------------------------------
-  // Reels/posts play via blob: MSE, so the passive detector never sees a file.
-  // But Instagram embeds the media in <script type="application/json"> blobs:
-  //   video_versions[].url   -> direct signed progressive .mp4 on fbcdn
-  //   image_versions2.candidates[].url -> direct signed .jpg on fbcdn
-  // (no cipher, no login for public posts). We scrape the best of each media
-  // node and inject it as a downloadable card. Carousels expose several items,
-  // mixing photos and videos. A video node also carries an image_versions2
-  // poster, so we only treat a node as an image when it has NO video_versions,
-  // and we skip carousel parent nodes (their children are captured instead).
-  const INSTAGRAM_RE = /(^|\.)instagram\.com$/i;
-  let _ig = { path: null, vids: [] };
-  function parseInstaPath() {
-    const m = location.pathname.match(/^\/(?:reel|reels|p|tv)\/([^/]+)/);
-    return m ? { shortcode: m[1] } : null;
-  }
-  function bestBySize(arr) {
-    return arr.slice().sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0] || arr[0];
-  }
-  function igImageExt(url) {
-    try { const m = new URL(url).pathname.match(/\.(jpg|jpeg|png|webp|heic)$/i); return m ? m[1].toLowerCase() : 'jpg'; }
-    catch { return 'jpg'; }
-  }
-  function instagramVideos() {
-    if (!INSTAGRAM_RE.test(location.hostname)) return [];
-    const p = parseInstaPath();
-    if (!p) return [];
-    if (_ig.path === location.pathname && _ig.vids.length) return _ig.vids;
-    const items = [];            // { url, type: 'video' | 'image' }
-    const seen = new Set();
-    const deref = (obj, fn, depth = 0) => {
-      if (!obj || depth > 16) return;
-      try { fn(obj); if (typeof obj === 'object') for (const k in obj) deref(obj[k], fn, depth + 1); } catch {}
-    };
-    try {
-      for (const sc of document.querySelectorAll('script[type="application/json"]')) {
-        let data; try { data = JSON.parse(sc.textContent); } catch { continue; }
-        deref(data, (node) => {
-          if (!node || typeof node !== 'object') return;
-          if (Array.isArray(node.carousel_media)) return; // parent; children handled on their own
-          if (Array.isArray(node.video_versions) && node.video_versions.length) {
-            const best = bestBySize(node.video_versions);
-            if (best && best.url && !seen.has(best.url)) { seen.add(best.url); items.push({ url: best.url, type: 'video' }); }
-          } else if (node.image_versions2 && Array.isArray(node.image_versions2.candidates) && node.image_versions2.candidates.length) {
-            const best = bestBySize(node.image_versions2.candidates);
-            if (best && best.url && !seen.has(best.url)) { seen.add(best.url); items.push({ url: best.url, type: 'image' }); }
-          }
-        });
-      }
-    } catch {}
-    const owner = ((document.title.match(/^(.*?)\s+on Instagram/) || [])[1] || 'instagram').trim();
-    const multi = items.length > 1;
-    const vids = items.map((it, i) => {
-      const isImg = it.type === 'image';
-      const ext = isImg ? igImageExt(it.url) : 'mp4';
-      return {
-        id: 'ig:' + p.shortcode + ':' + i,
-        url: it.url, kind: 'file', ext,
-        name: (multi ? `${p.shortcode} (${i + 1})` : p.shortcode) + '.' + ext,
-        host: (() => { try { return new URL(it.url).host; } catch { return 'instagram'; } })(),
-        dlTitle: multi ? `${owner}_${p.shortcode}_${i + 1}` : `${owner}_${p.shortcode}`,
-        instagram: true, mediaType: it.type,
-      };
-    });
-    _ig = { path: location.pathname, vids };
-    return vids;
-  }
 
   if (ctxOk()) {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -275,7 +208,7 @@
   };
 
   const ui = {
-    streams: [], injected: [], series: null, open: false, toastTimer: null,
+    streams: [], series: null, open: false, toastTimer: null,
     build() {
       this.host = document.createElement('div');
       this.host.id = 'siphon-root';
@@ -324,15 +257,11 @@
       this.render();
     },
     setSeries(series) { this.series = series; this.render(); },
-    setInjected(list) { this.injected = Array.isArray(list) ? list : []; this.render(); },
-    visible() { return this.streams.length > 0 || this.injected.length > 0 || (this.series && this.series.episodesApiUrls && this.series.episodesApiUrls.length); },
+    visible() { return this.streams.length > 0 || (this.series && this.series.episodesApiUrls && this.series.episodesApiUrls.length); },
     render() {
       if (!this.host) return;
       this.host.style.display = this.visible() ? 'block' : 'none';
-      // When we resolve the real media ourselves (Instagram), the passive detector
-      // also catches audio tracks and tiny range-probe fragments — noise. If we have
-      // resolved videos, show only those; otherwise show sniffed streams.
-      const all = this.injected.length ? this.injected.slice() : this.streams.slice();
+      const all = this.streams.slice();
       const n = all.length;
       this.countEl.style.display = n ? 'inline-block' : 'none';
       this.countEl.textContent = String(n);
@@ -402,7 +331,6 @@
     ui.refresh();
     // chartdrama.com: resolve the series straight from its API.
     chartdramaSeries().then((cs) => { if (cs) ui.setSeries(cs); });
-    { const igv = instagramVideos(); if (igv.length) ui.setInjected(igv); }
     // generic fallback for other sites (scrape m3u8 + episodes API from the DOM).
     const meta = scanPageMeta();
     if (meta.episodesApiUrls && meta.episodesApiUrls.length && !ui.series) ui.setSeries(meta);
@@ -414,9 +342,6 @@
       });
       const m = scanPageMeta();
       if (m.episodesApiUrls && m.episodesApiUrls.length && !ui.series) ui.setSeries(m);
-      const iv = instagramVideos();
-      const cur = ui.injected || [];
-      if (iv.length && (iv.length !== cur.length || (iv[0] && cur[0] && iv[0].url !== cur[0].url) || !cur.length)) ui.setInjected(iv);
     }, 3000);
   }
   if (document.body) boot(); else window.addEventListener('DOMContentLoaded', boot);
