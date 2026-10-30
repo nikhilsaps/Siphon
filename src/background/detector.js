@@ -14,6 +14,23 @@ const DASH_RE = /\.mpd(\?|#|$)/i;
 const FILE_RE = /\.(mp4|webm|mkv|mov|m4v|m4a|mp3|flv|ogg|ts)(\?|#|$)/i;
 const SEGMENT_RE = /\.(ts|m4s|aac|vtt)(\?|#|$)/i;
 
+// Some players route manifests through a CORS proxy, e.g.
+//   https://xxx.workers.dev/proxy?url=https%3A%2F%2Fcdn%2F..%2Fx.m3u8
+// Unwrap the real media URL from common query params so we classify it and,
+// crucially, store the DIRECT CDN URL (which serves CORS * for background
+// fetch) rather than the opaque proxy wrapper.
+const PROXY_PARAMS = ['url', 'src', 'u', 'target', 'link', 'uri', 'file'];
+function unwrap(url) {
+  try {
+    const u = new URL(url);
+    for (const p of PROXY_PARAMS) {
+      const v = u.searchParams.get(p);
+      if (v && /^https?:\/\//i.test(v) && /\.(m3u8|mpd|mp4|webm|mkv)(\?|#|$)/i.test(v)) return v;
+    }
+  } catch {}
+  return null;
+}
+
 const CT_MAP = [
   [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i, StreamKind.HLS],
   [/application\/dash\+xml/i, StreamKind.DASH],
@@ -135,8 +152,9 @@ export function initDetector() {
 
   // URL-pattern pass (fast): catches obvious manifests/files on request.
   chrome.webRequest.onBeforeRequest.addListener((d) => {
-    const kind = classify(d.url, null);
-    if (kind !== StreamKind.UNKNOWN) add(d.tabId, d.url, kind);
+    const real = unwrap(d.url) || d.url;
+    const kind = classify(real, null);
+    if (kind !== StreamKind.UNKNOWN && !SEGMENT_RE.test(real)) add(d.tabId, real, kind);
   }, filter);
 
   // Content-Type pass (accurate): catches extension-less manifests/files.
@@ -144,12 +162,13 @@ export function initDetector() {
     chrome.webRequest.onHeadersReceived.addListener((d) => {
       const h = (d.responseHeaders || []).find((x) => x.name && x.name.toLowerCase() === 'content-type');
       const ct = h ? h.value : '';
-      const kind = classify(d.url, ct);
-      if (kind !== StreamKind.UNKNOWN && !SEGMENT_RE.test(d.url)) {
+      const real = unwrap(d.url) || d.url;
+      const kind = classify(real, ct);
+      if (kind !== StreamKind.UNKNOWN && !SEGMENT_RE.test(real)) {
         const extra = {};
         const len = (d.responseHeaders || []).find((x) => x.name && x.name.toLowerCase() === 'content-length');
         if (len && Number(len.value) > 0) extra.bytes = Number(len.value);
-        add(d.tabId, d.url, kind, extra);
+        add(d.tabId, real, kind, extra);
       }
     }, filter, ['responseHeaders']);
   }

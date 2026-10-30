@@ -64,14 +64,55 @@
     } catch { return { mediaUrls: [], dramaId: null, episodesApiUrls: [], episodesApiUrl: null }; }
   }
 
+  // --- chartdrama.com native support (reverse-engineered) -------------------
+  // Pages: /d/{bookId}/{slug} (detail) and /p/{bookId}/{slug}?ep=N (player)
+  //   GET /api/watch/{bookId}%2F{slug} -> { dramaId, title, embedUrl, ... }
+  //   GET /api/drama/{dramaId}/episodes -> { items: [{ ep, url }] }  (url = direct HLS)
+  // The video CDN host varies per drama (rivoshort / versevoyagetv / viscame / ...),
+  // so we always trust the url returned by the API. No auth, no tokens, one call = all eps.
+  const CHARTDRAMA_RE = /(^|\.)chartdrama\.com$/i;
+  let _chart = { path: null, series: null };
+  function parseDramaPath() {
+    // Landing is /d/{bookId}/{slug}; the player navigates to /p/{bookId}/{slug}?ep=N.
+    // Both resolve through the same /api/watch/{bookId}/{slug} endpoint.
+    const m = location.pathname.match(/^\/[dp]\/([^/]+)\/(.+?)\/?$/);
+    return m ? { bookId: m[1], slug: m[2] } : null;
+  }
+  async function chartdramaSeries() {
+    if (!CHARTDRAMA_RE.test(location.hostname)) return null;
+    const p = parseDramaPath();
+    if (!p) return null;
+    if (_chart.path === location.pathname && _chart.series) return _chart.series;
+    try {
+      const watchUrl = `${location.origin}/api/watch/${encodeURIComponent(p.bookId + '/' + p.slug)}`;
+      const watch = await fetch(watchUrl, { credentials: 'include' }).then((r) => (r.ok ? r.json() : null));
+      if (!watch || !watch.dramaId) return null;
+      const episodesApiUrl = `${location.origin}/api/drama/${watch.dramaId}/episodes`;
+      const series = {
+        site: 'chartdrama',
+        dramaId: String(watch.dramaId),
+        title: (watch.title || document.title || 'drama').trim(),
+        embedUrl: watch.embedUrl || null,
+        episodesApiUrls: [episodesApiUrl],
+        episodesApiUrl,
+      };
+      _chart = { path: location.pathname, series };
+      return series;
+    } catch { return null; }
+  }
+
   if (ctxOk()) {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg && msg.type === MSG.DETECT_VIDEO) {
-        try {
-          const videos = collectVideos();
-          const meta = scanPageMeta();
-          sendResponse({ ok: true, video: pickActive(videos), count: videos.length, ...meta });
-        } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+        (async () => {
+          try {
+            const videos = collectVideos();
+            let meta = scanPageMeta();
+            const cs = await chartdramaSeries();
+            if (cs) meta = { ...meta, dramaId: cs.dramaId, title: cs.title, embedUrl: cs.embedUrl, episodesApiUrls: cs.episodesApiUrls, episodesApiUrl: cs.episodesApiUrl };
+            sendResponse({ ok: true, video: pickActive(videos), count: videos.length, ...meta });
+          } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+        })();
         return true;
       }
       if (msg && msg.type === MSG.STREAMS_UPDATED) { ui.setStreams(msg.streams || []); return; }
@@ -274,13 +315,19 @@
     if (!ctxOk()) return;
     ui.build();
     ui.refresh();
+    // chartdrama.com: resolve the series straight from its API.
+    chartdramaSeries().then((cs) => { if (cs) ui.setSeries(cs); });
+    // generic fallback for other sites (scrape m3u8 + episodes API from the DOM).
     const meta = scanPageMeta();
-    if (meta.episodesApiUrls && meta.episodesApiUrls.length) ui.setSeries(meta);
-    // periodic series re-scan (series APIs appear after playback starts)
+    if (meta.episodesApiUrls && meta.episodesApiUrls.length && !ui.series) ui.setSeries(meta);
+    // re-scan: SPA route changes (new drama) and late-appearing series APIs.
     setInterval(() => {
       if (!ctxOk()) { if (ui.host) ui.host.remove(); return; }
+      chartdramaSeries().then((cs) => {
+        if (cs && (!ui.series || ui.series.dramaId !== cs.dramaId)) ui.setSeries(cs);
+      });
       const m = scanPageMeta();
-      if (m.episodesApiUrls && m.episodesApiUrls.length && (!ui.series || ui.series.episodesApiUrls.length !== m.episodesApiUrls.length)) ui.setSeries(m);
+      if (m.episodesApiUrls && m.episodesApiUrls.length && !ui.series) ui.setSeries(m);
     }, 3000);
   }
   if (document.body) boot(); else window.addEventListener('DOMContentLoaded', boot);

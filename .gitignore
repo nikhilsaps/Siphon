@@ -14,3 +14,7 @@ playwright-report/
 *.mp4
 *.webm
 *.mkv
+
+# Recon / capture scratch (box-only reverse-engineering artifacts)
+tools/
+*.bat

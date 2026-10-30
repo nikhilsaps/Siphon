@@ -3,7 +3,7 @@ import { loadHlsPlaylist } from '../core/hls-loader.js';
 import { segmentsInInterval, estimateSegmentCount, clampInterval, totalDuration } from '../core/segment-manager.js';
 import DownloadManager, { JobState } from '../core/download-manager.js';
 import VideoAssembler from '../core/video-assembler.js';
-import { initDetector, list as listStreams, clear as clearStreams } from './detector.js';
+import { initDetector, list as listStreams, clear as clearStreams, setNotifier } from './detector.js';
 
 const dm = new DownloadManager({
   onProgress: (u) => {
@@ -13,6 +13,13 @@ const dm = new DownloadManager({
 
 // Start passive network detection as soon as the worker loads.
 initDetector();
+// Forward detected streams to the page overlay. runtime.sendMessage (used inside
+// the detector) reaches extension pages like the popup, but NOT content scripts;
+// content scripts must be messaged via tabs.sendMessage.
+setNotifier((tabId, streams) => {
+  if (!tabId || tabId < 0) return;
+  chrome.tabs.sendMessage(tabId, { type: MSG.STREAMS_UPDATED, tabId, streams }).catch(() => {});
+});
 
 chrome.action.setBadgeTextColor?.({ color: '#ffffff' });
 
@@ -115,14 +122,9 @@ async function downloadStream(stream, title, meta = null) {
 // ---------------------------------------------------------------------------
 
 async function fetchEpisodesListForAll(apiUrls) {
-  const candidates = new Set();
-  for (const u of (apiUrls || [])) {
-    candidates.add(u);
-    const base = u.split('?')[0];
-    candidates.add(base);
-    candidates.add(base + '?start=1');
-    candidates.add(base + '?page=1');
-  }
+  // chartdrama's /api/drama/{id}/episodes returns the whole series in one call,
+  // so we just fetch each given URL once and dedupe by episode number.
+  const candidates = new Set(apiUrls || []);
   const merged = [];
   const seen = new Set();
   for (const u of candidates) {
