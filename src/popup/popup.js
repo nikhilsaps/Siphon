@@ -105,6 +105,13 @@ function makeCard(stream) {
   const btn = document.createElement('button');
   btn.className = 'btn btn-primary sc-dl';
   btn.textContent = 'Download';
+  const isDash = stream.kind === 'dash';
+  if (isDash) {
+    btn.disabled = true;
+    btn.textContent = 'Not supported';
+    btn.title = 'DASH (.mpd) streams need the yt-dlp companion, which is not installed yet.';
+    btn.classList.add('sc-dl-disabled');
+  }
   const barWrap = document.createElement('div');
   barWrap.className = 'sc-progress';
   barWrap.hidden = true;
@@ -119,7 +126,7 @@ function makeCard(stream) {
 
   const entry = { li, bar, barWrap, status, btn };
   cards.set(stream.id, entry);
-  btn.addEventListener('click', () => startStreamDownload(stream, entry));
+  if (!isDash) btn.addEventListener('click', () => startStreamDownload(stream, entry));
   return li;
 }
 

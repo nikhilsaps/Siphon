@@ -169,13 +169,34 @@ function chartdramaRefreshBase(apiUrls) {
   return null;
 }
 
-async function freshEpisodeUrl(refreshBase, ep, fallback) {
-  if (!refreshBase || ep == null) return fallback;
+async function freshEpisode(refreshBase, ep, fallback) {
+  if (!refreshBase || ep == null) return { url: fallback, subtitleUrl: '' };
   try {
     const r = await fetch(`${refreshBase}?ep=${encodeURIComponent(ep)}`);
-    if (r.ok) { const j = await r.json(); if (j && j.url) return j.url; }
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.url) return { url: j.url, subtitleUrl: typeof j.subtitleUrl === 'string' ? j.subtitleUrl : '' };
+    }
   } catch {}
-  return fallback;
+  return { url: fallback, subtitleUrl: '' };
+}
+
+// Subtitles are best-effort: many episodes have none (subtitleUrl === '') and some
+// sites omit them entirely. This NEVER throws and NEVER blocks the video download —
+// callers wrap it in try/catch and ignore its result.
+function isHttpUrl(u) {
+  return typeof u === 'string' && /^https?:\/\//i.test(u.trim());
+}
+
+async function downloadSubtitle(subUrl, filenameBase) {
+  if (!isHttpUrl(subUrl)) return false; // no subs — silently skip
+  try {
+    const ext = (subUrl.split('?')[0].match(/\.(vtt|srt|ass|ssa)$/i) || [, 'vtt'])[1].toLowerCase();
+    await chrome.downloads.download({ url: subUrl.trim(), filename: `${filenameBase}.${ext}`, saveAs: false });
+    return true;
+  } catch {
+    return false; // sub failure must not affect the video
+  }
 }
 
 async function downloadAllEpisodesInBackground(episodesApiUrls, titleBase, tabId = null) {
@@ -194,11 +215,14 @@ async function downloadAllEpisodesInBackground(episodesApiUrls, titleBase, tabId
       try {
         // bulk-list URLs for every episode but the current one are stale (403);
         // re-sign each one just before downloading it.
-        const url = await freshEpisodeUrl(refreshBase, item.ep, item.url || '');
+        const fresh = await freshEpisode(refreshBase, item.ep, item.url || '');
+        const url = fresh.url;
         const epNum = item.ep != null ? String(item.ep).padStart(2, '0') : String(i + 1).padStart(2, '0');
         const base = `${titleBase || 'video'} - E${epNum}`;
         if (/\.m3u8(\?|$)/i.test(url)) await downloadHls(url, base);
         else await downloadFile(url, base);
+        // optional sidecar subtitle — failure here is swallowed, video already saved
+        try { await downloadSubtitle(fresh.subtitleUrl, base); } catch {}
       } catch (e) {
         failed.push(item.ep);
       }

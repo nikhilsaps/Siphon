@@ -233,6 +233,8 @@
     background: #6d5efc; display: flex; align-items: center; justify-content: center;
     transition: background .14s ease; }
   .dl:hover { background: #5847e8; }
+  .dl-off { background: #c7c9d1; cursor: not-allowed; }
+  .dl-off:hover { background: #c7c9d1; }
   .dl svg { width: 15px; height: 15px; }
   .foot { padding: 12px 16px 14px; border-top: 1px solid #ececf0; }
   .allbtn { width: 100%; padding: 11px; border-radius: 10px; border: none; cursor: pointer;
@@ -323,13 +325,15 @@
         this.bodyEl.innerHTML = '';
         for (const s of all) {
           const k = KIND[s.kind] || KIND.unknown;
+          const isDash = s.kind === 'dash';
           const card = document.createElement('div'); card.className = 'card';
           const size = s.bytes ? ' · ' + (s.bytes / 1048576).toFixed(1) + ' MB' : '';
+          const btnTitle = isDash ? 'DASH (.mpd) needs the yt-dlp companion (not installed yet)' : 'Download';
           card.innerHTML = `
             <span class="chip" style="background:${k.bg};color:${k.color}">${k.label}</span>
             <div class="meta"><div class="name">${escapeHtml(s.name)}</div><div class="sub">${escapeHtml(s.host)}${size}</div></div>
-            <button class="dl" title="Download">${icon.down}</button>`;
-          card.querySelector('.dl').addEventListener('click', () => this.download(s));
+            <button class="dl${isDash ? ' dl-off' : ''}"${isDash ? ' disabled' : ''} title="${btnTitle}">${icon.down}</button>`;
+          if (!isDash) card.querySelector('.dl').addEventListener('click', () => this.download(s));
           this.bodyEl.appendChild(card);
         }
       }
