@@ -296,7 +296,10 @@
       send({ type: MSG.DOWNLOAD_ALL_EPISODES, episodesApiUrls: this.series.episodesApiUrls, title }).catch((e) => this.showToast('Error: ' + (e && e.message || e), 'err'));
     },
     onStatus(p) {
-      if (p.state === 'downloading') this.showToast(`Episode ${p.episode} (${p.current}/${p.total})…`, '', 4000);
+      if (p.state === 'downloading') {
+        const label = p.total ? `Episode ${p.episode} (${p.current}/${p.total})…` : (p.note || 'Downloading…');
+        this.showToast(label, '', 4000);
+      }
       else if (p.state === 'done') this.showToast(p.filename ? `Saved ${p.filename}` : (p.failed && p.failed.length ? `Done. Failed: ${p.failed.join(', ')}` : 'Download complete'), 'ok');
       else if (p.state === 'failed') this.showToast('Failed: ' + (p.error || 'unknown'), 'err');
     },

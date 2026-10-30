@@ -31,6 +31,15 @@ function sanitizeFilename(name) {
   return String(name || 'video').replace(/[\\/:*?"<>|\n\r\t]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 150) || 'video';
 }
 
+// Download status must reach BOTH the popup (runtime.sendMessage) and the page
+// overlay (tabs.sendMessage — runtime messages never reach content scripts).
+function emitStatus(tabId, payload) {
+  const msg = { type: MSG.DOWNLOAD_ALL_STATUS, payload };
+  try { chrome.runtime.sendMessage(msg).catch(() => {}); } catch {}
+  if (tabId && tabId > 0) { try { chrome.tabs.sendMessage(tabId, msg).catch(() => {}); } catch {} }
+}
+
+
 function bytesToBase64(bytes) {
   let binary = '';
   const chunk = 0x8000;
@@ -145,21 +154,22 @@ async function fetchEpisodesListForAll(apiUrls) {
   return merged;
 }
 
-async function downloadAllEpisodesInBackground(episodesApiUrls, titleBase) {
+async function downloadAllEpisodesInBackground(episodesApiUrls, titleBase, tabId = null) {
   try { chrome.alarms.create('sg-keepalive', { periodInMinutes: 0.5 }); } catch {}
   try {
     const list = await fetchEpisodesListForAll(episodesApiUrls);
     if (!list.length) {
-      chrome.runtime.sendMessage({ type: MSG.DOWNLOAD_ALL_STATUS, payload: { state: 'failed', error: 'No episodes found.' } }).catch(() => {});
+      emitStatus(tabId, { state: 'failed', error: 'No episodes found.' });
       return;
     }
     const failed = [];
     for (let i = 0; i < list.length; i++) {
       const item = list[i];
-      chrome.runtime.sendMessage({ type: MSG.DOWNLOAD_ALL_STATUS, payload: { current: i + 1, total: list.length, episode: item.ep, state: 'downloading' } }).catch(() => {});
+      emitStatus(tabId, { current: i + 1, total: list.length, episode: item.ep, state: 'downloading' });
       try {
         const url = item.url || '';
-        const base = `${titleBase || 'video'} - E${item.ep}`;
+        const epNum = item.ep != null ? String(item.ep).padStart(2, '0') : String(i + 1).padStart(2, '0');
+        const base = `${titleBase || 'video'} - E${epNum}`;
         if (/\.m3u8(\?|$)/i.test(url)) await downloadHls(url, base);
         else await downloadFile(url, base);
       } catch (e) {
@@ -167,15 +177,73 @@ async function downloadAllEpisodesInBackground(episodesApiUrls, titleBase) {
       }
       await new Promise((r) => setTimeout(r, 300));
     }
-    chrome.runtime.sendMessage({ type: MSG.DOWNLOAD_ALL_STATUS, payload: { state: 'done', failed } }).catch(() => {});
+    emitStatus(tabId, { state: 'done', failed });
   } catch (e) {
-    chrome.runtime.sendMessage({ type: MSG.DOWNLOAD_ALL_STATUS, payload: { state: 'failed', error: String(e?.message || e) } }).catch(() => {});
+    emitStatus(tabId, { state: 'failed', error: String(e?.message || e) });
   } finally {
     try { chrome.alarms.clear('sg-keepalive'); } catch {}
   }
 }
 
 chrome.alarms.onAlarm.addListener(() => {});
+
+// ---------------------------------------------------------------------------
+// right-click context menu: download the whole series or just this video
+// ---------------------------------------------------------------------------
+
+const CTX = { urls: ['http://*/*', 'https://*/*'] };
+function buildContextMenus() {
+  if (!chrome.contextMenus) return;
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: 'siphon-series', title: 'Siphon ⬇  Download whole series', contexts: ['page', 'video', 'link', 'frame', 'selection'], documentUrlPatterns: CTX.urls });
+    chrome.contextMenus.create({ id: 'siphon-video', title: 'Siphon ⬇  Download this video', contexts: ['page', 'video', 'link', 'frame'], documentUrlPatterns: CTX.urls });
+  });
+}
+chrome.runtime.onInstalled.addListener(buildContextMenus);
+chrome.runtime.onStartup && chrome.runtime.onStartup.addListener(buildContextMenus);
+buildContextMenus();
+
+function bestHlsStream(tabId) {
+  const streams = listStreams(tabId) || [];
+  return streams.find((s) => s.kind === StreamKind.HLS) || streams.find((s) => s.kind === StreamKind.FILE) || streams[0] || null;
+}
+
+if (chrome.contextMenus) {
+  chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    const tabId = tab && tab.id;
+    if (!tabId) return;
+    // Resolve series + title from the content script (works on chartdrama and
+    // any site that exposes episodesApiUrls; falls back to sniffed streams).
+    let page = null;
+    try { page = await chrome.tabs.sendMessage(tabId, { type: MSG.DETECT_VIDEO }); } catch {}
+    const title = (page && page.title) || (tab && tab.title) || 'video';
+
+    if (info.menuItemId === 'siphon-series') {
+      const apis = page && page.episodesApiUrls;
+      if (apis && apis.length) {
+        emitStatus(tabId, { state: 'downloading', current: 0, total: 0, episode: '', note: 'Resolving episodes…' });
+        downloadAllEpisodesInBackground(apis, title, tabId);
+        return;
+      }
+      // No series API — fall back to the single detected stream.
+    }
+
+    // Single video (or series fallback): download the best detected stream.
+    const stream = bestHlsStream(tabId);
+    if (!stream) {
+      emitStatus(tabId, { state: 'failed', error: 'No downloadable video detected yet. Start playback, then try again.' });
+      return;
+    }
+    emitStatus(tabId, { state: 'downloading', current: 1, total: 1, episode: '', note: 'Downloading…' });
+    try {
+      const r = await downloadStream(stream, title);
+      emitStatus(tabId, { state: 'done', filename: r.filename });
+    } catch (e) {
+      emitStatus(tabId, { state: 'failed', error: String(e && e.message || e) });
+    }
+  });
+}
+
 
 // ---------------------------------------------------------------------------
 // message router
@@ -221,16 +289,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             try {
               const meta = msg.clientId ? { clientId: msg.clientId } : null;
               const r = await downloadStream(msg.stream, msg.title, meta);
-              chrome.runtime.sendMessage({ type: MSG.DOWNLOAD_ALL_STATUS, payload: { state: 'done', filename: r.filename, clientId: msg.clientId } }).catch(() => {});
+              emitStatus(tabId, { state: 'done', filename: r.filename, clientId: msg.clientId });
             } catch (e) {
-              chrome.runtime.sendMessage({ type: MSG.DOWNLOAD_ALL_STATUS, payload: { state: 'failed', error: String(e?.message || e), clientId: msg.clientId } }).catch(() => {});
+              emitStatus(tabId, { state: 'failed', error: String(e?.message || e), clientId: msg.clientId });
             }
           })();
           sendResponse({ ok: true, started: true });
           break;
         }
         case MSG.DOWNLOAD_ALL_EPISODES: {
-          downloadAllEpisodesInBackground(msg.episodesApiUrls, msg.title || 'video');
+          downloadAllEpisodesInBackground(msg.episodesApiUrls, msg.title || 'video', tabId);
           sendResponse({ ok: true, started: true });
           break;
         }
